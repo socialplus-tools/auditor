@@ -50,6 +50,10 @@
     .brand-gradient-bg { background: linear-gradient(135deg, #3769EC 0%, #3B41EC 50%, #45A5ED 100%); }
     .drop-active { border-color: #3B41EC !important; background: rgba(59, 65, 236, 0.05) !important; }
     .sp-particle-canvas { position: fixed; inset: 0; pointer-events: none; z-index: 99998; }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes toast-out { from { opacity: 1; } to { opacity: 0; transform: translateY(-4px); } }
+    .toast-enter { animation: toast-in .2s ease forwards; }
+    .toast-exit { animation: toast-out .25s ease forwards; }
     #error-display { display: none; position: fixed; top: 0; left: 0; right: 0; background: #fee2e2; color: #991b1b; padding: 16px; font-family: monospace; font-size: 13px; z-index: 99999; white-space: pre-wrap; max-height: 50vh; overflow: auto; }
   </style>
   <script>
@@ -293,6 +297,19 @@
       };
     }
 
+    // ─── Utility: Relative time ────────────────────────────────────
+    function timeAgo(date) {
+      if (!date) return "";
+      const s = Math.floor((Date.now() - date) / 1000);
+      if (s < 10) return "just now";
+      if (s < 60) return `${s}s ago`;
+      const m = Math.floor(s / 60);
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      return `${Math.floor(h / 24)}d ago`;
+    }
+
     // ─── Utility: Fetch with retry + backoff ────────────────────────
     async function fetchWithRetry(url, options, maxRetries = 2) {
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -345,6 +362,19 @@
       }), [darkMode]);
     }
 
+    // ─── Toast Component ──────────────────────────────────────────
+    function Toast({ message, visible }) {
+      if (!message) return null;
+      return (
+        <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-surface-2 border border-bdark-hover text-txt-secondary text-sm font-medium shadow-lg ${visible ? "toast-enter" : "toast-exit"}`}>
+          <div className="flex items-center gap-2">
+            <CheckCircle size={14} className="text-status-green" />
+            {message}
+          </div>
+        </div>
+      );
+    }
+
     // ─── Score helpers ──────────────────────────────────────────────
     function getScoreColor(score) {
       if (score >= 80) return "text-status-green";
@@ -362,16 +392,36 @@
     function ScoreRing({ score, size = 140, darkMode }) {
       const r = (size - 16) / 2;
       const circ = 2 * Math.PI * r;
-      const offset = circ - (score / 100) * circ;
+      const targetOffset = circ - (score / 100) * circ;
+      const [animOffset, setAnimOffset] = React.useState(circ);
+      const [displayScore, setDisplayScore] = React.useState(0);
       const textMuted = darkMode ? "text-txt-muted" : "text-gray-400";
+
+      React.useEffect(() => {
+        // Animate ring stroke
+        const raf = requestAnimationFrame(() => setAnimOffset(targetOffset));
+        // Animate number count-up
+        const duration = 1000;
+        const start = performance.now();
+        let frame;
+        const tick = (now) => {
+          const t = Math.min((now - start) / duration, 1);
+          const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+          setDisplayScore(Math.round(eased * score));
+          if (t < 1) frame = requestAnimationFrame(tick);
+        };
+        frame = requestAnimationFrame(tick);
+        return () => { cancelAnimationFrame(raf); cancelAnimationFrame(frame); };
+      }, [score, circ, targetOffset]);
+
       return (
         <div className="relative" style={{ width: size, height: size }}>
           <svg width={size} height={size} className="-rotate-90">
             <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={darkMode ? "#272727" : "#e5e7eb"} strokeWidth="8" />
-            <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={getScoreRingColor(score)} strokeWidth="8" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={offset} style={{ transition: "stroke-dashoffset 1s ease" }} />
+            <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={getScoreRingColor(score)} strokeWidth="8" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={animOffset} style={{ transition: "stroke-dashoffset 1s cubic-bezier(0.22, 1, 0.36, 1)" }} />
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <span className={`text-3xl font-bold ${getScoreColor(score)}`}>{score}</span>
+            <span className={`text-3xl font-bold ${getScoreColor(score)}`}>{displayScore}</span>
             <span className={`text-xs ${textMuted}`}>/ 100</span>
           </div>
         </div>
@@ -379,7 +429,7 @@
     }
 
     // ─── Finding Card ───────────────────────────────────────────────
-    function FindingCard({ finding, expanded, onToggle, darkMode, showSuggestions, showDocRefs }) {
+    function FindingCard({ finding, expanded, onToggle, darkMode, showSuggestions, showDocRefs, onCopy }) {
       const t = useTheme(darkMode);
       const config = SEVERITY_CONFIG[finding.severity];
       const Icon = config.icon;
@@ -427,7 +477,7 @@
                   </div>
                 )}
                 <div className="flex gap-2">
-                  <button onClick={withParticles(() => navigator.clipboard.writeText(finding.revised))}
+                  <button onClick={withParticles(() => { navigator.clipboard.writeText(finding.revised); if (onCopy) onCopy("Suggestion copied"); })}
                     className="text-xs px-3 py-1.5 bg-brand-blue/10 text-brand-blue hover:bg-brand-blue/20 transition-colors" style={{ borderRadius: 8 }}>Copy suggestion</button>
                 </div>
               </div>
@@ -492,7 +542,7 @@
     }
 
     // ─── Side-by-Side Diff View ─────────────────────────────────────
-    function DiffView({ findings, darkMode }) {
+    function DiffView({ findings, darkMode, onCopy }) {
       const t = useTheme(darkMode);
       const diffFindings = findings.filter(f => f.original && f.revised && f.original !== f.revised);
       if (diffFindings.length === 0) {
@@ -523,7 +573,7 @@
                   <div className={`p-4 ${darkMode ? "bg-status-green/5" : "bg-green-50"}`}>
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-xs font-medium text-status-green uppercase tracking-wider">Suggested</p>
-                      <button onClick={() => navigator.clipboard.writeText(f.revised)}
+                      <button onClick={() => { navigator.clipboard.writeText(f.revised); if (onCopy) onCopy("Suggestion copied"); }}
                         className="text-xs text-brand-blue hover:text-brand-hover flex items-center gap-1 transition-colors">
                         <Copy size={10} /> Copy
                       </button>
@@ -625,21 +675,23 @@
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────
-    function Sidebar({ open, history, onQuickAnalyze, onDocPanel, onClearHistory, onNewAnalysis, darkMode }) {
+    function Sidebar({ open, history, onQuickAnalyze, onDocPanel, onClearHistory, onNewAnalysis, showNewAnalysis, darkMode }) {
       const t = useTheme(darkMode);
       return (
         <div className={`${open ? "w-64" : "w-0 overflow-hidden"} flex-shrink-0 border-r ${t.borderColor} ${t.cardBg} transition-all duration-200 flex flex-col`}>
           <div className="p-4 flex-1 overflow-y-auto">
-            <div className="mb-6">
-              <button onClick={withParticles(onNewAnalysis)}
-                className="w-full btn-primary text-white font-medium text-sm flex items-center justify-center gap-2 py-2.5">
-                <Play size={14} />
-                New Analysis
-              </button>
-            </div>
+            {showNewAnalysis && (
+              <div className="mb-6">
+                <button onClick={withParticles(onNewAnalysis)}
+                  className="w-full btn-primary text-white font-medium text-sm flex items-center justify-center gap-2 py-2.5">
+                  <Play size={14} />
+                  New Analysis
+                </button>
+              </div>
+            )}
 
             <div className="mb-6">
-              <p className={`text-xs font-medium ${t.textMuted} uppercase tracking-wider mb-2`}>Source of Truth</p>
+              <p className={`text-xs font-medium ${t.textMuted} uppercase tracking-wider mb-2`}>Guidelines</p>
               <button onClick={onDocPanel}
                 className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl ${t.inputBg} border ${t.inputBorder} ${t.hoverBg} transition-colors text-left`}>
                 <FileText size={16} className="text-brand-blue flex-shrink-0" />
@@ -720,8 +772,20 @@
       const [error, setError] = useState(null);
       const [analysisResult, setAnalysisResult] = useState(null);
       const [analyzedLabel, setAnalyzedLabel] = useState("");
+      const [analyzedAt, setAnalyzedAt] = useState(null);
       const [history, setHistory] = useState(loadHistory);
       const [isDragging, setIsDragging] = useState(false);
+      const [toast, setToast] = useState({ message: "", visible: false });
+      const toastTimer = useRef(null);
+
+      const showToast = useCallback((message) => {
+        clearTimeout(toastTimer.current);
+        setToast({ message, visible: true });
+        toastTimer.current = setTimeout(() => {
+          setToast(t => ({ ...t, visible: false }));
+          setTimeout(() => setToast({ message: "", visible: false }), 300);
+        }, 1800);
+      }, []);
       const fileInputRef = useRef(null);
 
       // ─── Settings persistence ────────────────
@@ -729,6 +793,14 @@
         setSettings(next);
         saveSettings(next);
       }, []);
+
+      // ─── Tick relative time every 30s ─────────
+      const [, setTick] = useState(0);
+      useEffect(() => {
+        if (!analyzedAt) return;
+        const id = setInterval(() => setTick(t => t + 1), 30000);
+        return () => clearInterval(id);
+      }, [analyzedAt]);
 
       // ─── Escape key closes modals ────────────
       useEffect(() => {
@@ -894,6 +966,7 @@
 
           setAnalysisResult(result);
           setAnalyzedLabel(label);
+          setAnalyzedAt(Date.now());
           setExpandedFindings(new Set());
           setSeverityFilter("all");
           setCategoryFilter("all");
@@ -943,10 +1016,11 @@
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `lighthouse-audit-${analyzedLabel.replace(/[^a-z0-9]/gi, "-")}-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `content-checker-audit-${analyzedLabel.replace(/[^a-z0-9]/gi, "-")}-${new Date().toISOString().slice(0, 10)}.json`;
         a.click();
         URL.revokeObjectURL(url);
-      }, [analysisResult, analyzedLabel]);
+        showToast("JSON exported");
+      }, [analysisResult, analyzedLabel, showToast]);
 
       const copySummary = useCallback(() => {
         const lines = [
@@ -957,6 +1031,7 @@
           ...findings.map(f => `[${f.severity.toUpperCase()}] ${f.category}: ${f.text}\n  ${f.suggestion}`),
         ];
         navigator.clipboard.writeText(lines.join("\n"));
+        showToast("Summary copied");
       }, [analyzedLabel, overallScore, analysisResult, findings]);
 
       // ─── Render ───────────────────────────────
@@ -995,7 +1070,7 @@
 
           {/* Body */}
           <div className="flex flex-1 overflow-hidden">
-            <Sidebar open={sidebarOpen} history={history} onQuickAnalyze={handleQuickAnalyze} onDocPanel={() => setDocPanelOpen(true)} onClearHistory={clearHistory} onNewAnalysis={() => setView("input")} darkMode={darkMode} />
+            <Sidebar open={sidebarOpen} history={history} onQuickAnalyze={handleQuickAnalyze} onDocPanel={() => setDocPanelOpen(true)} onClearHistory={clearHistory} onNewAnalysis={() => setView("input")} showNewAnalysis={view !== "input"} darkMode={darkMode} />
 
             <main className="flex-1 overflow-y-auto p-4 md:p-6">
               {view === "input" ? (
@@ -1059,6 +1134,14 @@
                       ))}
                     </div>
 
+                    <div className={`px-6 pt-4 pb-2 flex items-center gap-3 border-b ${t.borderColor}`}>
+                      <span className={`text-xs ${t.textMuted}`}>Content type</span>
+                      <select value={contentType} onChange={e => setContentType(e.target.value)}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs ${t.inputBg} border ${t.inputBorder} ${t.textPrimary} focus:outline-none`}>
+                        {CONTENT_TYPES.map(ct => <option key={ct} value={ct}>{ct}</option>)}
+                      </select>
+                    </div>
+
                     <div className="p-6">
                       {inputMode === "url" && (
                         <div className="space-y-4">
@@ -1104,15 +1187,9 @@
 
                       {inputMode === "paste" && (
                         <div className="space-y-4">
-                          <div className="flex gap-3">
-                            <select value={contentType} onChange={e => setContentType(e.target.value)}
-                              className={`px-3 py-2 rounded-lg ${t.inputBg} border ${t.inputBorder} ${t.textPrimary} text-sm focus:outline-none`}>
-                              {CONTENT_TYPES.map(ct => <option key={ct} value={ct}>{ct}</option>)}
-                            </select>
-                            <input type="text" value={contentLabel} onChange={e => setContentLabel(e.target.value)}
-                              placeholder="Label (e.g. 'Homepage hero draft v2')"
-                              className={`flex-1 px-3 py-2 rounded-lg ${t.inputBg} border ${t.inputBorder} ${t.textPrimary} text-sm focus:outline-none`} />
-                          </div>
+                          <input type="text" value={contentLabel} onChange={e => setContentLabel(e.target.value)}
+                            placeholder="Label (e.g. 'Homepage hero draft v2')"
+                            className={`w-full px-3 py-2 rounded-lg ${t.inputBg} border ${t.inputBorder} ${t.textPrimary} text-sm focus:outline-none`} />
                           <textarea value={pasteValue} onChange={e => setPasteValue(e.target.value)}
                             placeholder="Paste your content here..."
                             rows={8}
@@ -1149,7 +1226,7 @@
                         <h2 className={`text-lg font-semibold ${t.textPrimary}`}>{analyzedLabel || "Analysis"}</h2>
                       </div>
                       <p className={`text-sm ${t.textMuted} ml-6`}>
-                        {contentType} {"\u00B7"} {analysisResult?.mode || "full"} audit{analysisResult?.mode === "persona" ? ` (${persona.toUpperCase()})` : ""}
+                        {contentType} {"\u00B7"} {analysisResult?.mode || "full"} audit{analysisResult?.mode === "persona" ? ` (${persona.toUpperCase()})` : ""} {"\u00B7"} {timeAgo(analyzedAt)}
                         {analysisResult?.usage && (() => {
                           const tc = formatTokenCost(analysisResult.usage);
                           return tc ? <>{" \u00B7 "}<span title={`Input: ${tc.input} \u00B7 Output: ${tc.output}`}>{tc.total} tokens ({tc.cost})</span></> : null;
@@ -1275,7 +1352,7 @@
                         {filteredFindings.map(f => (
                           <FindingCard key={f.id} finding={f} expanded={expandedFindings.has(f.id)}
                             onToggle={() => toggleFinding(f.id)} darkMode={darkMode}
-                            showSuggestions={settings.showSuggestions} showDocRefs={settings.showDocRefs} />
+                            showSuggestions={settings.showSuggestions} showDocRefs={settings.showDocRefs} onCopy={showToast} />
                         ))}
                         {filteredFindings.length === 0 && (
                           <div className={`text-center py-12 ${t.textMuted}`}>
@@ -1288,7 +1365,7 @@
                   )}
 
                   {/* Side by Side Tab */}
-                  {view === "sidebyside" && <DiffView findings={findings} darkMode={darkMode} />}
+                  {view === "sidebyside" && <DiffView findings={findings} darkMode={darkMode} onCopy={showToast} />}
 
                   {/* Terminology Heatmap Tab */}
                   {view === "heatmap" && (
@@ -1349,6 +1426,9 @@
 
           {/* Analyzing Overlay */}
           {analyzing && <AnalyzingOverlay analyzeStep={analyzeStep} analyzePhase={analyzePhase} darkMode={darkMode} />}
+
+          {/* Toast */}
+          <Toast message={toast.message} visible={toast.visible} />
         </div>
       );
     }
